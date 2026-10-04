@@ -4,6 +4,7 @@ import 'package:latlong2/latlong.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'school.dart';
+import 'driving_service.dart';
 
 class SchoolMap extends StatefulWidget {
   const SchoolMap({
@@ -12,11 +13,15 @@ class SchoolMap extends StatefulWidget {
     required this.schools,
     this.demo = false,
     this.loadTiles = true,
+    this.apiKey = '',
+    this.drivingService,
   });
   final Place? home;
   final List<School> schools;
   final bool demo;
   final bool loadTiles;
+  final String apiKey;
+  final DrivingService? drivingService;
   @override
   State<SchoolMap> createState() => SchoolMapState();
 }
@@ -25,10 +30,59 @@ class SchoolMapState extends State<SchoolMap> {
   final controller = MapController();
   bool ready = false, failed = false;
   int? selected;
+  late final DrivingService driving = widget.drivingService ?? DrivingService();
+  bool roadMode = false, loadingRoutes = false;
+  int generation = 0;
+  String routeSignature = '';
+  final Map<int, DrivingRoute> roadRoutes = {};
+  final Map<int, String> routeErrors = {};
+  String signature() =>
+      '${widget.apiKey}|${widget.home?.latitude},${widget.home?.longitude}|${widget.schools.map((s) => '${s.id}:${s.place.latitude},${s.place.longitude}').join(';')}';
+  @override
+  void initState() {
+    super.initState();
+    routeSignature = signature();
+  }
+
+  Future<void> loadRoutes() async {
+    if (loadingRoutes || widget.home == null || widget.schools.isEmpty) return;
+    final origin = widget.home!;
+    final destinations = List<School>.of(widget.schools);
+    final key = widget.apiKey;
+    final request = ++generation;
+    setState(() {
+      loadingRoutes = true;
+      roadRoutes.clear();
+      routeErrors.clear();
+    });
+    // Limit concurrent requests to avoid bursting the service quota.
+    for (var i = 0; i < destinations.length; i += 3) {
+      if (!mounted || request != generation) return;
+      await Future.wait(
+        destinations.skip(i).take(3).map((s) async {
+          try {
+            final route = await driving.fetch(origin, s.place, key);
+            if (mounted && request == generation) {
+              setState(() => roadRoutes[s.id] = route);
+            }
+          } on RouteFailure catch (error) {
+            if (mounted && request == generation) {
+              setState(() => routeErrors[s.id] = error.message);
+            }
+          }
+        }),
+      );
+    }
+    if (!mounted || request != generation) return;
+    setState(() => loadingRoutes = false);
+    fitAll();
+  }
+
   LatLng point(Place place) => LatLng(place.latitude, place.longitude);
   List<LatLng> get points => [
     if (widget.home != null) point(widget.home!),
     ...widget.schools.map((s) => point(s.place)),
+    if (roadMode) ...roadRoutes.values.expand((route) => route.points),
   ];
   void fitAll() {
     if (!ready) return;
@@ -56,6 +110,13 @@ class SchoolMapState extends State<SchoolMap> {
   @override
   void didUpdateWidget(covariant SchoolMap oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (routeSignature != signature()) {
+      routeSignature = signature();
+      generation++;
+      loadingRoutes = false;
+      roadRoutes.clear();
+      routeErrors.clear();
+    }
     // Callers may mutate a list in place, so compare the currently drawn set.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) fitAll();
@@ -65,6 +126,8 @@ class SchoolMapState extends State<SchoolMap> {
 
   @override
   void dispose() {
+    generation++;
+    if (widget.drivingService == null) driving.dispose();
     controller.dispose();
     super.dispose();
   }
@@ -126,6 +189,11 @@ class SchoolMapState extends State<SchoolMap> {
         shortest != null &&
         (distanceKm(home!, s.place) - shortest).abs() < 0.000001;
     const highlight = Color(0xFFE65100);
+    final roadDistances = roadRoutes.values.map((r) => r.meters).toList()
+      ..sort();
+    final shortestRoad = roadDistances.isEmpty ? null : roadDistances.first;
+    bool isRoadNearest(int id) =>
+        shortestRoad != null && roadRoutes[id]?.meters == shortestRoad;
     final connections = home == null
         ? <Polyline>[]
         : [
@@ -142,11 +210,9 @@ class SchoolMapState extends State<SchoolMap> {
                   borderStrokeWidth: nearest ? 3 : 1,
                 ),
           ];
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-      ),
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(20),
       clipBehavior: Clip.antiAlias,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -169,8 +235,70 @@ class SchoolMapState extends State<SchoolMap> {
           ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                ChoiceChip(
+                  label: const Text('직선거리'),
+                  selected: !roadMode,
+                  onSelected: (_) {
+                    setState(() => roadMode = false);
+                    fitAll();
+                  },
+                ),
+                ChoiceChip(
+                  label: const Text('자동차 도로경로'),
+                  selected: roadMode,
+                  onSelected: (_) {
+                    setState(() => roadMode = true);
+                    fitAll();
+                  },
+                ),
+              ],
+            ),
+          ),
+          if (roadMode)
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    '각 목적지까지 개별 추천 경로를 조회합니다. 여러 곳을 순회하는 경로가 아닙니다.',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                  const SizedBox(height: 8),
+                  FilledButton.icon(
+                    onPressed:
+                        loadingRoutes ||
+                            home == null ||
+                            widget.schools.isEmpty ||
+                            widget.apiKey.trim().isEmpty
+                        ? null
+                        : loadRoutes,
+                    icon: const Icon(Icons.directions_car),
+                    label: Text(
+                      loadingRoutes ? '경로 조회 중…' : '자동차 경로 조회 / 새로고침',
+                    ),
+                  ),
+                  if (widget.apiKey.trim().isEmpty)
+                    const Text('상단 API 설정에서 REST API 키를 입력해 주세요.'),
+                  if (home == null || widget.schools.isEmpty)
+                    const Text('출발지와 목적지를 먼저 추가해 주세요.'),
+                  if (loadingRoutes) const LinearProgressIndicator(),
+                  const SizedBox(height: 8),
+                  const Text(
+                    '추천 경로의 주행거리·예상 시간입니다. 교통 상황에 따라 달라질 수 있어요.',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
             child: Text(
-              '${widget.demo ? '예시 위치 · ' : ''}파랑: 출발지 / 초록: 목적지 / 주황: 최단 직선거리',
+              '${widget.demo ? '예시 위치 · ' : ''}파랑: 출발지 / 초록: 목적지 / 주황: ${roadMode ? '조회된 경로 중 최소 주행거리' : '최단 직선거리'}',
               style: const TextStyle(fontSize: 12),
             ),
           ),
@@ -213,7 +341,27 @@ class SchoolMapState extends State<SchoolMap> {
                           }
                         },
                       ),
-                    PolylineLayer(polylines: connections),
+                    PolylineLayer(
+                      polylines: roadMode
+                          ? [
+                              for (final nearest in [false, true])
+                                for (final entry in roadRoutes.entries.where(
+                                  (e) => isRoadNearest(e.key) == nearest,
+                                ))
+                                  Polyline(
+                                    points: entry.value.points,
+                                    color: nearest
+                                        ? highlight
+                                        : const Color(0xFF607D8B),
+                                    strokeWidth: nearest ? 7 : 3,
+                                    borderStrokeWidth: nearest ? 3 : 1,
+                                    borderColor: nearest
+                                        ? const Color(0xFFFFE0B2)
+                                        : Colors.white,
+                                  ),
+                            ]
+                          : connections,
+                    ),
                     MarkerLayer(
                       markers: [
                         if (widget.home != null)
@@ -225,7 +373,7 @@ class SchoolMapState extends State<SchoolMap> {
                           (s) => marker(
                             s.place,
                             s.name,
-                            isNearest(s)
+                            (roadMode ? isRoadNearest(s.id) : isNearest(s))
                                 ? highlight
                                 : selected == s.id
                                 ? Colors.purple
@@ -297,7 +445,26 @@ class SchoolMapState extends State<SchoolMap> {
               ],
             ),
           ),
-          if (shortest != null)
+          if (roadMode)
+            ...widget.schools.map(
+              (s) => ListTile(
+                onTap: () => focusSchool(s),
+                leading: Icon(
+                  Icons.directions_car,
+                  color: isRoadNearest(s.id) ? highlight : Colors.blueGrey,
+                ),
+                title: Text(s.name),
+                subtitle: Text(
+                  roadRoutes[s.id]?.description ??
+                      routeErrors[s.id] ??
+                      (loadingRoutes ? '조회 중…' : '자동차 경로 조회 버튼을 눌러 주세요.'),
+                ),
+                trailing: isRoadNearest(s.id)
+                    ? const Text('최소 거리', style: TextStyle(color: highlight))
+                    : null,
+              ),
+            ),
+          if (!roadMode && shortest != null)
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
               child: Row(

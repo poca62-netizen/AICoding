@@ -463,6 +463,7 @@ class _FinderPageState extends State<FinderPage> {
                 const SizedBox(height: 24),
                 SchoolMap(
                   key: mapKey,
+                  apiKey: apiKey,
                   home: home,
                   schools: schools,
                   demo: demo,
@@ -569,6 +570,7 @@ class _FinderPageState extends State<FinderPage> {
                             context,
                             MaterialPageRoute(
                               builder: (_) => ResultsPage(
+                                apiKey: apiKey,
                                 home: home!,
                                 schools: schools,
                                 demo: demo,
@@ -614,10 +616,12 @@ class ResultsPage extends StatefulWidget {
     required this.home,
     required this.schools,
     required this.demo,
+    this.apiKey = '',
   });
   final Place home;
   final List<School> schools;
   final bool demo;
+  final String apiKey;
   @override
   State<ResultsPage> createState() => _ResultsPageState();
 }
@@ -671,6 +675,7 @@ class _ResultsPageState extends State<ResultsPage> {
                 const SizedBox(height: 24),
                 SchoolMap(
                   key: mapKey,
+                  apiKey: widget.apiKey,
                   home: widget.home,
                   schools: ranked,
                   demo: widget.demo,
