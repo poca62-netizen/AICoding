@@ -14,10 +14,17 @@ class KakaoGeocoder {
   KakaoGeocoder({http.Client? client}) : _client = client ?? http.Client();
   final http.Client _client;
   void dispose() => _client.close();
+  Future<List<Place>> searchOrigin(String query, String key) async {
+    final addresses = await search(query, key, allowEmpty: true);
+    if (addresses.isNotEmpty) return addresses;
+    return search(query, key, keyword: true);
+  }
+
   Future<List<Place>> search(
     String query,
     String key, {
     bool keyword = false,
+    bool allowEmpty = false,
   }) async {
     if (key.trim().isEmpty) {
       throw const SearchFailure('설정에서 카카오 REST API 키를 입력해 주세요.');
@@ -64,7 +71,7 @@ class KakaoGeocoder {
           double.parse(item['x'] as String),
         );
       }).toList();
-      if (places.isEmpty) {
+      if (places.isEmpty && !allowEmpty) {
         if (keyword) {
           throw const SearchFailure(
             '장소를 찾지 못했어요. 지역명이나 지점명을 함께 입력하거나 주소로 검색해 주세요.',

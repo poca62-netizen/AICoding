@@ -53,9 +53,7 @@ class FinderPage extends StatefulWidget {
 class _FinderPageState extends State<FinderPage> {
   final geocoder = KakaoGeocoder();
   final mapKey = GlobalKey<SchoolMapState>();
-  final homeText = TextEditingController(),
-      nameText = TextEditingController(),
-      schoolText = TextEditingController();
+  final homeText = TextEditingController(), nameText = TextEditingController();
   String apiKey = const String.fromEnvironment('KAKAO_REST_API_KEY');
   Place? home;
   final List<School> schools = [];
@@ -66,7 +64,6 @@ class _FinderPageState extends State<FinderPage> {
     geocoder.dispose();
     homeText.dispose();
     nameText.dispose();
-    schoolText.dispose();
     super.dispose();
   }
 
@@ -116,8 +113,8 @@ class _FinderPageState extends State<FinderPage> {
     controller.dispose();
   }
 
-  Future<Place?> chooseAddress(String query, {bool keyword = false}) async {
-    final options = await geocoder.search(query, apiKey, keyword: keyword);
+  Future<Place?> chooseAddress(String query, {bool origin = false}) async {
+    final options = await geocoder.searchOrigin(query, apiKey);
     if (!mounted) return null;
     return showModalBottomSheet<Place>(
       context: context,
@@ -130,15 +127,11 @@ class _FinderPageState extends State<FinderPage> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                keyword ? '장소를 선택해 주세요' : '주소를 확인해 주세요',
+                origin ? '출발지를 선택해 주세요' : '목적지를 선택해 주세요',
                 style: Theme.of(context).textTheme.titleLarge,
               ),
               const SizedBox(height: 8),
-              Text(
-                keyword
-                    ? '검색 결과 최대 15곳입니다. 원하는 장소가 없으면 지역명도 함께 입력해 주세요.'
-                    : '검색된 주소를 선택하면 위치가 확정됩니다.',
-              ),
+              const Text('검색 결과 최대 15곳입니다. 원하는 장소가 없으면 지역명도 함께 입력해 주세요.'),
               const SizedBox(height: 16),
               ConstrainedBox(
                 constraints: BoxConstraints(
@@ -169,13 +162,11 @@ class _FinderPageState extends State<FinderPage> {
 
   Future<void> search(bool forHome) async {
     if (busy) return;
-    final name = nameText.text.trim();
-    final byName = !forHome && schoolText.text.trim().isEmpty;
-    final query = forHome
-        ? homeText.text.trim()
-        : (byName ? name : schoolText.text.trim());
-    if (query.isEmpty || (!forHome && name.isEmpty)) {
-      message(forHome ? '집 주소를 입력해 주세요.' : '장소 이름을 입력해 주세요. 주소는 비워 두어도 됩니다.');
+    final query = (forHome ? homeText : nameText).text.trim();
+    if (query.isEmpty) {
+      message(
+        forHome ? '출발지 주소 또는 장소 이름을 입력해 주세요.' : '목적지 주소 또는 장소 이름을 입력해 주세요.',
+      );
       return;
     }
     if (apiKey.isEmpty) {
@@ -184,9 +175,9 @@ class _FinderPageState extends State<FinderPage> {
     }
     setState(() => busy = true);
     try {
-      final place = await chooseAddress(query, keyword: byName);
+      final place = await chooseAddress(query, origin: forHome);
       if (!mounted || place == null) return;
-      final selectedName = place.name ?? name;
+      final selectedName = place.name ?? place.address;
       if (!forHome &&
           schools.any(
             (s) => s.name == selectedName && s.place.address == place.address,
@@ -197,11 +188,10 @@ class _FinderPageState extends State<FinderPage> {
       setState(() {
         if (forHome) {
           home = place;
-          homeText.text = place.address;
+          homeText.text = place.name ?? place.address;
         } else {
           schools.add(School(nextId++, selectedName, place));
           nameText.clear();
-          schoolText.clear();
         }
       });
     } on SearchFailure catch (e) {
@@ -305,40 +295,45 @@ class _FinderPageState extends State<FinderPage> {
   );
   @override
   Widget build(BuildContext context) {
-    final homePanel = panel('01', '어디에서 출발하나요?', '도로명 또는 지번 주소로 출발지를 찾아주세요.', [
-      TextField(
-        controller: homeText,
-        enabled: !busy && !demo,
-        onChanged: (_) => setState(() => home = null),
-        onSubmitted: (_) => search(true),
-        decoration: const InputDecoration(
-          labelText: '집(출발지) 주소',
-          hintText: '예: 경기 수원시 팔달구 효원로 241',
-          prefixIcon: Icon(Icons.home_outlined),
-        ),
-      ),
-      const SizedBox(height: 12),
-      SizedBox(
-        width: double.infinity,
-        child: OutlinedButton.icon(
-          onPressed: busy || demo ? null : () => search(true),
-          icon: const Icon(Icons.search),
-          label: const Text('출발지 주소 검색'),
-        ),
-      ),
-      if (home != null)
-        Padding(
-          padding: const EdgeInsets.only(top: 14),
-          child: Text(
-            '✓  ${home!.address}',
-            style: const TextStyle(color: green),
+    final homePanel = panel(
+      '01',
+      '어디에서 출발하나요?',
+      '주소 또는 장소 이름으로 검색하고 출발지를 선택하세요.',
+      [
+        TextField(
+          controller: homeText,
+          enabled: !busy && !demo,
+          onChanged: (_) => setState(() => home = null),
+          onSubmitted: (_) => search(true),
+          decoration: const InputDecoration(
+            labelText: '출발지 주소 또는 장소 이름',
+            hintText: '예: 수원시청, 수원역, 경기 수원시 팔달구 효원로 241',
+            prefixIcon: Icon(Icons.home_outlined),
           ),
         ),
-    ]);
+        const SizedBox(height: 12),
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            onPressed: busy || demo ? null : () => search(true),
+            icon: const Icon(Icons.search),
+            label: const Text('출발지 검색'),
+          ),
+        ),
+        if (home != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 14),
+            child: Text(
+              '✓  ${home!.name == null ? '' : '${home!.name} · '}${home!.address}',
+              style: const TextStyle(color: green),
+            ),
+          ),
+      ],
+    );
     final schoolPanel = panel(
       '02',
       '어디로 가시나요?',
-      '기관명·상호명·학교명으로 검색하고, 결과에서 원하는 장소를 선택하세요.',
+      '주소 또는 장소 이름으로 검색하고, 결과에서 목적지를 선택하세요.',
       [
         TextField(
           controller: nameText,
@@ -346,20 +341,8 @@ class _FinderPageState extends State<FinderPage> {
           textInputAction: TextInputAction.search,
           onSubmitted: (_) => search(false),
           decoration: const InputDecoration(
-            labelText: '장소 이름',
-            hintText: '예: 디지털혁신교육센터, 수원시청, 카페',
-            prefixIcon: Icon(Icons.school_outlined),
-          ),
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: schoolText,
-          enabled: !busy && !demo,
-          onSubmitted: (_) => search(false),
-          decoration: const InputDecoration(
-            labelText: '장소 주소 (선택)',
-            hintText: '비워 두면 장소 이름으로 검색합니다',
-            helperText: '주소를 입력하면 해당 주소로 검색합니다.',
+            labelText: '목적지 주소 또는 장소 이름',
+            hintText: '예: 수원시청, 디지털혁신교육센터, 도로명 주소',
             prefixIcon: Icon(Icons.location_on_outlined),
           ),
         ),
